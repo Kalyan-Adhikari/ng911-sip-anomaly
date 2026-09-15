@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------------------
+# Capture data and anything derived from it.
+#
+# Real NG911 captures contain caller telephone numbers and, on INVITEs carrying
+# Geolocation, caller location. Nothing derived from a live ESInet belongs in
+# version control, so captures and feature files are excluded by pattern rather
+# than by directory -- a stray .pcap anywhere in the tree stays out.
+# ---------------------------------------------------------------------------
+*.pcap
+*.pcapng
+*.cap
+*.crdownload
+*.part
+captures/
+pcaps/
+
+# Feature frames and scored output derive directly from capture content.
+*.parquet
+output/
+features/
+
+# Trained models are pickles: build outputs of the machine that trained them,
+# never artifacts to distribute or fetch. Retrain instead of committing.
+models/
+*.joblib
+
+# The pseudonymisation key. Losing it only breaks hash continuity between runs,
+# but publishing it would make the hashes reversible by brute force.
+*.key
+.ng911_sip/
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
