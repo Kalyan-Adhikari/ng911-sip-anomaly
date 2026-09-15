@@ -149,8 +149,25 @@ accumulated entirely in memory (~1.3 GB per GB of capture).
 
 Fewer than 0.3% of packets touch a SIP port. The reader now decodes only the
 fixed-offset headers needed to apply a port filter, and copies a payload only
-for frames that pass: **786 MB in 7.0 s (~113 MB/s), 149× faster**, and only
-parsed SIP is retained.
+for frames that pass: on one 786 MB capture (1,634,894 packets), **12.7 minutes
+falls to 7.0 seconds — about 109×**, at ~113 MB/s, with only parsed SIP retained.
+
+Neither half of that change is worth much alone. Measured over an identical
+60,000-packet budget from the same file:
+
+| Approach | Rate | Speedup |
+|---|---|---|
+| Scapy dissection + decode every payload (prototype) | 2,149 pkt/s | — |
+| Scapy dissection + port filter | 2,448 pkt/s | 1.1× |
+| Fixed-offset headers + decode every payload | 5,613 pkt/s | 2.6× |
+| Fixed-offset headers + port filter (shipped) | 215,299 pkt/s | 100× |
+
+Filtering on top of Scapy gains almost nothing because Scapy dissects eagerly
+when constructing the packet object: by the time the port is readable, the cost
+is already paid. Parsing headers by hand without filtering still copies and
+UTF-8 decodes every RTP payload before discarding it. Only together do they let
+the reject decision be made from roughly twenty bytes of header, leaving the
+remaining ~1,400 untouched.
 
 ### Caller identity reached disk
 

@@ -105,14 +105,22 @@ On 12 GB of production ESInet capture (12 hourly files from a live deployment):
 | | |
 |---|---|
 | Capture volume | 12 GB, 12 files |
-| Packets examined | 110,667 (of hundreds of millions) |
+| Packets examined | 110,667 SIP-port segments (of ~25M packets) |
 | SIP messages parsed | 75,987 |
 | Feature windows | 4,239 |
-| Read throughput | ~113 MB/s |
+| Read throughput | ~113 MB/s (786 MB file in 7.0 s) |
 
-The port filter is what makes this tractable: fewer than 0.3% of packets touch
-a SIP port, and non-SIP frames are rejected from their fixed-offset headers
-alone, without the payload ever being decoded.
+Fewer than 0.3% of packets touch a SIP port, so the reader decodes only the
+fixed-offset Ethernet/IP/TCP fields needed to reject a frame, and copies a
+payload only for the ones that survive. On a 786 MB capture that takes a full
+pass from 12.7 minutes to 7.0 seconds.
+
+Both halves are needed. Adding a port filter to full Scapy dissection gains
+1.1×, because Scapy dissects eagerly and the cost is spent before the port is
+readable. Hand-parsing headers without a filter gains 2.6×, because every RTP
+payload is still copied and decoded before being discarded. Together: 100× on
+an identical packet budget. See
+[docs/changes-from-prototype.md](docs/changes-from-prototype.md).
 
 ## Privacy
 
