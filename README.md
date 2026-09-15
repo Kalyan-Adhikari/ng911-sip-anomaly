@@ -1,240 +1,371 @@
 # ng911-sip-anomaly
 
-Unsupervised anomaly detection for SIP traffic on an NG911 ESInet.
+Finds unusual activity in the phone signaling traffic of an NG911 emergency call
+network.
 
-Reads packet captures, reassembles SIP, aggregates into fixed-width time
-windows, and flags windows that do not look like the learned baseline. Built for
-hour-rotated captures from a live ESInet, where SIP is a fraction of a percent
-of the packets and caller identity must never reach disk.
+## What this does
+
+Emergency call networks use a protocol called SIP to set up, manage, and end 911
+calls. This tool reads recorded network traffic, pulls out the SIP messages, and
+learns what a normal hour looks like on your network. After that it can review
+new traffic and point out the time periods that do not match the normal pattern.
+
+Things it is built to notice:
+
+* A sudden flood of call attempts, which can overwhelm a call center
+* Repeated login attempts against your equipment
+* A machine that has no business sending SIP suddenly sending it
+* Your equipment going quiet when it should be sending regular health checks
+
+It reports a short list of suspicious time windows with a reason attached to
+each one. It does not block traffic or change anything on your network. It only
+reads recorded capture files.
+
+## Who this is for
+
+Anyone running or researching an NG911 network who has packet captures and wants
+an automated second pair of eyes on them. You need to be comfortable on a
+command line. You do not need to know machine learning.
+
+## How it works
 
 ```
-captures ──► port filter ──► SIP reassembly ──► pseudonymise ──► 10s windows
-                                                                      │
-                                              ┌───────────────────────┤
-                                              ▼                       ▼
-                                      statistical model        structural rules
-                                     (IForest/ECOD/LOF)     (off-mesh, auth storm,
-                                              │              silence, domination)
-                                              └───────────┬───────────┘
-                                                          ▼
-                                              flagged windows + reason
+capture files
+      |
+      v
+keep only SIP traffic          (skips the other 99% quickly)
+      |
+      v
+rebuild complete SIP messages  (a message can span several packets)
+      |
+      v
+replace caller phone numbers with codes
+      |
+      v
+group into 10-second blocks and count what happened in each
+      |
+      v
+compare against learned normal  ---> list of suspicious blocks
 ```
 
-## Why both a model and rules
+Two things decide whether a block gets reported.
 
-The model learns what the baseline looks like and flags departures from it. But
-an unsupervised model can only flag what *varies* in training — and some
-conditions never occur in a clean baseline at all, so the feature that would
-expose them is constant and gets pruned.
+The first is a statistical model. It learns the shape of ordinary traffic from
+your own captures and reports blocks that look different. This catches floods,
+login storms, and outages.
 
-A low-rate scan from a host outside the ESInet mesh is the clearest case: it
-adds about one message per second to a mesh already doing several, so every
-volume feature stays in range. In testing, the model ranked it highly
-(ROC AUC 0.92) but never crossed the threshold. It is not a distribution to
-estimate — it is traffic from somewhere that should not be sending SIP at all.
-Rules assert that directly. Every flagged window records which mechanism caught
-it in a `detected_by` column.
+The second is a short list of fixed rules. Some problems never appear in clean
+training data, so a model has nothing to learn them from. The clearest example is
+a slow scan from an unfamiliar machine. It adds barely any traffic, so every
+count stays in its normal range, but the machine sending it does not belong on
+the network at all. A rule can state that directly. During testing the model
+ranked such a scan highly but never quite flagged it, while the rule caught it
+every time.
+
+Each reported block says which of the two found it, in a column called
+`detected_by`.
+
+## Requirements
+
+* Python 3.10 or newer
+* Packet captures in `.pcap` format, which is what `tcpdump` and Wireshark write
+  by default
+* Enough disk space for the captures themselves. The tool needs very little on
+  top of that.
+
+Tested on Linux and Windows. Nothing in it is platform specific.
 
 ## Install
 
 ```bash
-git clone https://github.com/Kalyan-Adhikari/ng911-sip-anomaly
+git clone https://github.com/Kalyan-Adhikari/ng911-sip-anomaly.git
 cd ng911-sip-anomaly
-python -m venv .venv
-.venv\Scripts\Activate.ps1        # Windows;  source .venv/bin/activate on Unix
-pip install -e ".[dev]"
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
 ```
 
-Add `.[formats]` if you need pcapng support — the built-in reader handles
-classic pcap, which is what `tcpdump` and `dumpcap` write by default.
+On Windows, replace the activate line with `.venv\Scripts\Activate.ps1`.
 
-## Verify it works, with no data
+If your captures are `.pcapng` rather than `.pcap`, install the optional reader
+as well:
+
+```bash
+pip install -e ".[formats]"
+```
+
+## Check that it works
+
+Run this first. It builds its own practice traffic, so you do not need any
+capture files.
 
 ```bash
 ng911-sip validate
 ```
 
-This synthesises an ESInet baseline — an OPTIONS keepalive mesh with occasional
-emergency INVITEs to `urn:service:sos` — trains on it, then scores four labelled
-attack scenarios:
+It creates a stretch of ordinary-looking emergency network traffic, learns from
+it, then tries four known attacks against what it learned:
 
-| Scenario | What it is | Caught by |
-|---|---|---|
-| `invite_flood` | TDoS: one host drives INVITEs far above mesh rate | model |
-| `register_brute` | Credential stuffing, challenged but never completed | model |
-| `options_scan` | Low-rate enumeration from an unknown host | rule |
-| `keepalive_blackout` | The mesh stops answering | model + rule |
-
-All four are detected at full recall. The command exits non-zero if any is
-missed, so it works as a regression test.
-
-## Use it on real captures
-
-```bash
-# 1. What SIP is in here?
-ng911-sip inspect /captures/2026-08-28 -v
-
-# 2. Build feature windows (caller identity is hashed at parse time)
-ng911-sip features /captures/2026-08-28 -o features/baseline.parquet
-
-# 3. Train and calibrate
-ng911-sip train features/baseline.parquet -m models --models iforest ecod \
-    --target-fpr 0.005
-
-# 4. Score new traffic
-ng911-sip features /captures/2026-08-29 -o features/today.parquet
-ng911-sip score models/iforest features/today.parquet -o output/scored.parquet
-```
-
-To measure accuracy, label a capture you have ground truth for and evaluate:
-
-```bash
-ng911-sip features /captures/incident -o features/incident.parquet --label 1
-ng911-sip score models/iforest features/incident.parquet -o output/incident.parquet
-ng911-sip evaluate output/incident.parquet
-```
-
-Add `--per-source` to `features` for one row per (window, source IP). Window
-rows answer *is this interval unusual*; source rows answer *which host made it
-unusual*.
-
-## Measured behaviour
-
-On 12 GB of production ESInet capture (12 hourly files from a live deployment):
-
-| | |
+| Test | What it simulates |
 |---|---|
-| Capture volume | 12 GB, 12 files |
-| Packets examined | 110,667 SIP-port segments (of ~25M packets) |
-| SIP messages parsed | 75,987 |
-| Feature windows | 4,239 |
-| Read throughput | ~113 MB/s (786 MB file in 7.0 s) |
+| `invite_flood` | A flood of call attempts from one machine |
+| `register_brute` | Repeated login attempts |
+| `options_scan` | A quiet scan from an unfamiliar machine |
+| `keepalive_blackout` | Equipment stops responding |
 
-Fewer than 0.3% of packets touch a SIP port, so the reader decodes only the
-fixed-offset Ethernet/IP/TCP fields needed to reject a frame, and copies a
-payload only for the ones that survive. On a 786 MB capture that takes a full
-pass from 12.7 minutes to 7.0 seconds.
+The last line should read `all scenarios detected`. If it does, your install is
+working. The command fails with an error code if any test is missed, so it also
+works as a check after upgrades.
 
-Both halves are needed. Adding a port filter to full Scapy dissection gains
-1.1×, because Scapy dissects eagerly and the cost is spent before the port is
-readable. Hand-parsing headers without a filter gains 2.6×, because every RTP
-payload is still copied and decoded before being discarded. Together: 100× on
-an identical packet budget. See
-[docs/changes-from-prototype.md](docs/changes-from-prototype.md).
+## Using it on real captures
+
+Point the tool at a folder. It reads every capture inside, including
+subfolders, and skips partial downloads and other files.
+
+### Step 1: See what is in your captures
+
+```bash
+ng911-sip inspect /path/to/captures -v
+```
+
+This prints how many SIP messages were found, which message types appeared, and
+how much of the traffic was emergency calls. Run this first to confirm the tool
+is seeing your SIP traffic. If it reports zero messages, see Troubleshooting.
+
+### Step 2: Turn captures into a summary table
+
+```bash
+ng911-sip features /path/to/captures -o features/baseline.parquet
+```
+
+This writes one row per 10-second block, with about 70 columns counting what
+happened in that block. Phone numbers are already replaced with codes at this
+point.
+
+### Step 3: Learn what normal looks like
+
+```bash
+ng911-sip train features/baseline.parquet -m models --target-fpr 0.005
+```
+
+Use captures from a period you believe was ordinary. The tool splits them by
+time, learns from the earlier part, and uses the later part to set its alerting
+level.
+
+`--target-fpr 0.005` means "aim to flag about 0.5% of normal traffic." Lower
+numbers mean fewer alerts and a higher chance of missing something. The command
+prints how many alerts per day that setting works out to, so you can adjust
+before deploying.
+
+### Step 4: Review new traffic
+
+```bash
+ng911-sip features /path/to/new-captures -o features/today.parquet
+ng911-sip score models/iforest features/today.parquet -o output/today.parquet
+```
+
+This prints the most suspicious blocks and writes the full results to a file.
+
+Use captures the model has not seen. Scoring the same traffic you trained on
+only proves the software runs.
+
+## Reading the results
+
+The output file has one row per 10-second block. The useful columns:
+
+| Column | Meaning |
+|---|---|
+| `window_start_utc` | When the block began |
+| `is_anomaly` | 1 if flagged, 0 if not |
+| `detected_by` | What flagged it |
+| `anomaly_score` | Higher means more unusual |
+| `total_messages` | How many SIP messages were in the block |
+
+Values you may see in `detected_by`:
+
+| Value | What it means |
+|---|---|
+| `model` | Statistically different from your normal traffic |
+| `offmesh_traffic` | A machine that is not a regular part of your network sent SIP |
+| `auth_storm` | Many login attempts in one block, none succeeding |
+| `mesh_silent` | No SIP at all during a period that should have had some |
+| `single_source_domination` | One machine sent nearly all the traffic in a busy block |
+
+A flag means "worth a look," not "confirmed attack." Some perfectly normal
+events will be flagged, especially real emergency calls on a network that is
+otherwise mostly automated health checks.
+
+To find out which machine caused a flagged block, rebuild the features with
+`--per-source`. That gives one row per machine per block instead of one row per
+block.
 
 ## Privacy
 
-Real NG911 SIP carries caller telephone numbers in `From`/`To`/`Contact` and
-caller location on INVITEs with `Geolocation`. The models consume counts and
-cardinalities — never identities — so identity is reduced to a keyed HMAC at
-parse time, before anything is written.
+Real 911 traffic contains caller phone numbers, and call setup messages can
+contain caller location. This tool does not need any of that to do its job, so
+it removes it early.
 
-What is kept in the clear is infrastructure: element IP addresses, hostnames,
-`User-Agent` strings, and `urn:service:sos` (a service, not a person). What is
-hashed: `From`/`To`/`Contact` user parts, `tel:` numbers whole, Call-IDs, and
-any non-service URN that may embed an incident identifier.
+Phone numbers, caller IDs, and call identifiers are replaced with scrambled
+codes as soon as a message is read, before anything is saved to disk. The codes
+are consistent, so you can still count how many different callers there were, but
+they cannot be turned back into phone numbers.
 
-The key lives at `~/.ng911_sip/pseudonym.key`, or set `NG911_SIP_PSEUDONYM_KEY`
-to share it across hosts. Losing it only means hashes from a later run will not
-match an earlier one.
+Equipment addresses, hostnames, and software names are kept readable, because
+knowing which piece of equipment is misbehaving is the whole point.
 
-`--no-pseudonymise` exists for synthetic traffic. Do not use it on live ESInet
-captures.
+The scrambling key is created automatically the first time you run the tool and
+stored at `~/.ng911_sip/pseudonym.key`. Back it up. If you lose it, codes from
+future runs will not match codes from past runs. To use the same key across
+several machines, set the `NG911_SIP_PSEUDONYM_KEY` environment variable to the
+same value on each.
 
-`.gitignore` excludes `*.pcap`, `*.parquet`, `models/`, and `*.key` by pattern
-rather than directory, so a stray capture anywhere in the tree stays out of
-version control.
+There is a `--no-pseudonymise` option. It is for testing with fake traffic. Do
+not use it on real emergency call data.
 
-## Features
+The included `.gitignore` blocks captures, results, models, and keys from being
+committed by accident.
 
-Per 10-second window (73 columns; 25 survive collinearity pruning on real data):
+## Configuration
 
-- **Volume** — messages, requests, responses, response/request ratio, retransmissions
-- **Methods** — one count per SIP method, plus method entropy
-- **Responses** — per-class rollups (1xx–6xx) and specific codes (401, 403, 404, 408, 480, 486, 487, 500, 503)
-- **Cardinality** — distinct sources, destinations, peer pairs, Call-IDs, From/To users, User-Agents
-- **Concentration** — source entropy, top-talker share, busiest source's message and INVITE counts, off-mesh source count and message ratio
-- **Size** — mean, max, standard deviation
-- **NG911 i3** — emergency (`urn:service:sos`) call count, Geolocation count, SDP count, multipart-body count, PIDF-LO-by-value count
-- **Authentication** — digest challenges, completions, rejections, and unanswered challenges
-- **Transport** — TCP share, maximum Via depth
-- **Time** — hour and weekday as sine/cosine pairs
+Most runs need no options. These are the ones that matter.
 
-### On the authentication counters
+| Option | Default | When to change it |
+|---|---|---|
+| `--ports` | `5060,5061,5062` | Your network uses a different SIP port |
+| `--window-seconds` | `10` | You want coarser or finer time blocks |
+| `--target-fpr` | `0.01` | You are getting too many or too few alerts |
+| `--per-source` | off | You want results broken down by machine |
+| `--models` | `iforest ecod` | You want to compare different detection methods |
 
-A `401` answering a `REGISTER` is the routine digest challenge every
-registration receives — not a failed login. Counting those as failures makes
-normal registration look like an attack. What matters is the challenge that is
-never completed, which is `unanswered_challenge_count`.
+The port setting deserves attention. The tool ignores traffic on other ports as
+its main speed trick, so if your SIP runs somewhere unusual and you do not set
+this, it will find nothing and report no problems.
 
-Completion is tracked **by Call-ID, not CSeq**: a digest retry reuses the same
-Call-ID with an incremented CSeq, so pairing the 401 and the eventual 200 by
-sequence number would mark every ordinary registration as unanswered.
+## Troubleshooting
+
+**"No SIP messages found"**
+
+Almost always the port. Check what port your SIP actually uses and pass it with
+`--ports`. Encrypted SIP, usually on port 5061, cannot be read by this tool at
+all; see Limitations.
+
+**Flags far more than expected on new traffic**
+
+Your traffic has changed since you trained. Retrain on more recent captures.
+
+**Flags nothing, ever**
+
+Confirm `ng911-sip inspect` still finds SIP messages. A tool that reports
+nothing because it stopped seeing traffic looks the same as a quiet network.
+
+**Out of memory**
+
+Process fewer captures at a time and combine the results. Memory use scales with
+the number of SIP messages, not the size of the captures.
+
+## What gets counted
+
+Each 10-second block records roughly 70 numbers, including:
+
+* How many messages, split by request and response
+* Counts for each SIP message type
+* Counts for each response code
+* How many different machines, callers, and calls appeared
+* Whether one machine dominated the block
+* Message sizes
+* Emergency-specific items: calls to the emergency service address, messages
+  carrying location, messages with media descriptions
+* Login attempts, successes, and attempts that were never completed
+* Time of day and day of week
+
+Columns that measure nearly the same thing are dropped automatically before
+training, so no single quantity gets counted twice.
+
+### A note on login counts
+
+A "401" response to a login is not a failure. It is a normal challenge that
+every login receives before the real attempt. Counting those as failures makes
+routine activity look like an attack. This tool counts them separately and only
+treats a login as suspicious when the challenge is never completed.
 
 ## Design notes
 
-**Windows are anchored to absolute epoch time.** Anchoring to each file's first
-packet makes hourly-rotated captures restart at window zero with boundaries at
-different offsets per file, so no continuous timeline can be built and a dialog
-spanning a rotation is counted twice.
+These are the choices that most affect accuracy.
 
-**Silent windows are emitted, not dropped.** On a keepalive-driven ESInet the
-absence of traffic *is* the anomaly. Gaps are filled only inside an observed
-capture span, so the hours between two non-adjacent files are never invented as
+**Time blocks use clock time, not file position.** Captures are usually split
+into hourly files. Numbering blocks from the start of each file makes the blocks
+from different files impossible to line up, and a call spanning the split gets
+counted twice. Blocks here are tied to actual clock time, so they line up across
+any number of files.
+
+**Quiet periods are recorded, not skipped.** On a network where equipment sends
+regular health checks, silence is the problem worth catching. Empty blocks are
+written out with zero counts. Gaps are only filled inside periods a capture
+actually covers, so a missing hour between two files is never mistaken for
 silence.
 
-**SIP over TCP is reassembled.** RFC 3261 §7.5 frames SIP over TCP by
-Content-Length, not by packet boundary. On the captures this targets SIP runs
-predominantly over TCP, and every emergency INVITE — the ones carrying SDP and
-Geolocation — exceeds one MTU. Treating one packet as one message loses exactly
-the messages that matter most. Streams joined mid-connection resynchronise to
-the next valid start line rather than being discarded.
+**Messages are rebuilt before being read.** A SIP message can be split across
+several packets, and several can share one packet. Reading each packet on its own
+miscounts both cases. In testing against a real network, rebuilding messages
+correctly interpreted 8 of 8 emergency calls where per-packet reading managed 6.
 
-**The threshold is calibrated, not assumed.** `contamination=0.10` makes the
-cutoff the 90th percentile of training scores, so 10% of the data defining
-"normal" is labelled anomalous regardless of content — 864 alerts a day at
-10-second windows. Here the data is split in time, the model fits on the earlier
-portion, and the threshold is read off a later held-out portion at an explicit
-target FPR. The achieved rate and the implied alerts/day are both reported, and
-the rate accounts for rule firings too.
+**The alert level is measured, not assumed.** A common shortcut is to tell the
+software "assume 10% of traffic is bad." That guarantees 10% of your normal
+traffic gets flagged no matter what it contains, which works out to hundreds of
+alerts a day. Here the software holds back part of your data, measures where the
+cutoff actually falls, and reports the real rate before you deploy.
 
-**Collinear features are pruned.** Scaled distances weight every column equally,
-so three columns all encoding message volume triple its weight. Anything
-correlating above 0.995 with a column already kept is dropped, and the surviving
-list is saved with the model.
+**Saved models are checked before loading.** Model files are Python pickles,
+which execute code when loaded. They are treated as local build output, never
+committed or downloaded, and the tool verifies a checksum before opening one.
 
-**Model artifacts are verified before loading.** joblib is pickle-based, and
-loading a pickle executes code. Artifacts are build outputs of the machine that
-trained them — gitignored, never fetched — and `load` checks a recorded SHA-256
-so a truncated or altered file fails loudly instead of being unpickled.
+## Performance
+
+Measured on a 786 MB capture containing 1.6 million packets:
+
+| | |
+|---|---|
+| Time for a full pass | 7 seconds |
+| Reading speed | about 113 MB per second |
+
+On that network fewer than 1 in 200 packets was SIP. The tool reads a few dozen
+bytes from each packet to decide whether to care, then skips the rest. Reading
+every packet in full took 12.7 minutes on the same file.
+
+## Limitations
+
+**Encrypted SIP cannot be read.** If your SIP runs over TLS, usually port 5061,
+this tool sees nothing useful. You would need to capture before encryption, at
+the session border controller, or use its logs instead.
+
+**It only looks at SIP.** Attacks on supporting services such as DNS, scanning
+activity, and media-stream attacks are all invisible to it. It is one layer, not
+a complete monitoring system.
+
+**It learns from whatever you give it.** If your training captures already
+contain an ongoing attack, it learns that as normal. Review the highest-scoring
+blocks of a fresh baseline before trusting it.
+
+**It needs a reasonably steady network.** The unfamiliar-machine rule works out
+which machines are regulars by seeing which appear consistently. Very short
+captures, or networks where equipment comes and goes, will produce false alarms.
+
+**Audio is not examined.** Only call signaling.
 
 ## Development
 
 ```bash
-pytest                 # 63 tests
+pip install -e ".[dev]"
+pytest
 ruff check src tests
 ```
 
-Tests cover TCP segmentation and pipelining, mid-stream resynchronisation,
-SDP inside multipart i3 bodies,
-compact and folded headers, VLAN tags, truncated captures, big-endian files,
-absolute-epoch anchoring, gap filling across non-adjacent captures, digest
-semantics, source concentration, threshold calibration, collinearity pruning,
-and artifact tampering.
+63 tests cover message rebuilding, time block alignment, login counting, alert
+level calibration, and file tampering.
 
-## Limitations
+For a detailed account of what changed from the earlier prototype and why, see
+[docs/design-notes.md](docs/design-notes.md).
 
-- **TLS-encrypted SIP is invisible.** NENA i3 permits SIP over TLS on port 5061;
-  if your tap sits downstream of the SBC and sees TLS, this yields nothing. Tap
-  pre-encryption, or ingest SBC logs instead.
-- **An unsupervised baseline learns whatever it is given.** If the baseline
-  contains ongoing scanning, the model learns it as normal. Review the top-scoring
-  windows of a fresh baseline before trusting it.
-- **The off-mesh rule assumes a stable mesh.** It derives membership from the
-  data (sources present in ≥20% of windows). A capture short enough that a
-  legitimate element appears rarely will flag that element.
-- **No RTP analysis.** Media-plane attacks are out of scope.
+## License
 
-## Licence
-
-MIT.
+MIT. See [LICENSE](LICENSE).
