@@ -147,7 +147,7 @@ version control.
 
 ## Features
 
-Per 10-second window (69 columns; 25 survive collinearity pruning on real data):
+Per 10-second window (73 columns; 25 survive collinearity pruning on real data):
 
 - **Volume** — messages, requests, responses, response/request ratio, retransmissions
 - **Methods** — one count per SIP method, plus method entropy
@@ -155,7 +155,7 @@ Per 10-second window (69 columns; 25 survive collinearity pruning on real data):
 - **Cardinality** — distinct sources, destinations, peer pairs, Call-IDs, From/To users, User-Agents
 - **Concentration** — source entropy, top-talker share, busiest source's message and INVITE counts, off-mesh source count and message ratio
 - **Size** — mean, max, standard deviation
-- **NG911 i3** — emergency (`urn:service:sos`) call count, Geolocation count, SDP count
+- **NG911 i3** — emergency (`urn:service:sos`) call count, Geolocation count, SDP count, multipart-body count, PIDF-LO-by-value count
 - **Authentication** — digest challenges, completions, rejections, and unanswered challenges
 - **Transport** — TCP share, maximum Via depth
 - **Time** — hour and weekday as sine/cosine pairs
@@ -211,11 +211,12 @@ so a truncated or altered file fails loudly instead of being unpickled.
 ## Development
 
 ```bash
-pytest                 # 61 tests
+pytest                 # 63 tests
 ruff check src tests
 ```
 
 Tests cover TCP segmentation and pipelining, mid-stream resynchronisation,
+SDP inside multipart i3 bodies,
 compact and folded headers, VLAN tags, truncated captures, big-endian files,
 absolute-epoch anchoring, gap filling across non-adjacent captures, digest
 semantics, source concentration, threshold calibration, collinearity pruning,

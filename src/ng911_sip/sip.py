@@ -88,6 +88,8 @@ class SipMessage:
     has_geolocation: bool = False     # NG911 i3 location by reference/value
     has_auth: bool = False            # Authorization / Proxy-Authorization present
     is_emergency_service: bool = False  # addressed to urn:service:sos (RFC 5031)
+    has_multipart_body: bool = False    # i3 bundles SDP with location and data
+    has_location_body: bool = False     # PIDF-LO carried by value in the body
 
     @property
     def is_request(self) -> bool:
@@ -217,6 +219,21 @@ def parse_message(
         for host in (uri_host, to_host)
     )
 
+    # NG911 i3 rarely sends bare SDP. It bundles SDP with PIDF-LO location and
+    # additional-data blocks in a multipart body, so testing the top-level
+    # Content-Type alone reports "no SDP" on precisely the emergency calls that
+    # carry it. When the body is multipart, look inside for the part headers.
+    is_multipart = content_type.startswith("multipart/")
+    body = text[separator:] if separator != -1 else ""
+    body_lower = body.lower() if is_multipart else ""
+
+    has_sdp = "application/sdp" in content_type or (
+        is_multipart and "application/sdp" in body_lower
+    )
+    has_location_body = "application/pidf+xml" in content_type or (
+        is_multipart and "application/pidf+xml" in body_lower
+    )
+
     return SipMessage(
         capture_file=capture_file,
         packet_number=packet.packet_number,
@@ -244,10 +261,12 @@ def parse_message(
         via_count=len(headers.get("via", [])),
         max_forwards=max_forwards,
         content_length=content_length,
-        has_sdp="application/sdp" in content_type,
+        has_sdp=has_sdp,
         has_geolocation="geolocation" in headers or "geolocation-routing" in headers,
         has_auth="authorization" in headers or "proxy-authorization" in headers,
         is_emergency_service=emergency,
+        has_multipart_body=is_multipart,
+        has_location_body=has_location_body,
     )
 
 

@@ -146,6 +146,8 @@ def _empty_window(
         "emergency_call_count": 0,
         "geolocation_count": 0,
         "sdp_count": 0,
+        "multipart_body_count": 0,
+        "location_body_count": 0,
         "auth_challenge_count": 0,
         "auth_completed_count": 0,
         "auth_rejected_count": 0,
@@ -272,6 +274,8 @@ def _summarise(
     )
     row["geolocation_count"] = sum(1 for m in messages if m.has_geolocation)
     row["sdp_count"] = sum(1 for m in messages if m.has_sdp)
+    row["multipart_body_count"] = sum(1 for m in messages if m.has_multipart_body)
+    row["location_body_count"] = sum(1 for m in messages if m.has_location_body)
 
     row.update(_auth_features(requests, responses))
     return row

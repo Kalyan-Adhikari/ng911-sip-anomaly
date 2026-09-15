@@ -18,15 +18,39 @@ The prototype parsed each packet's payload as one complete SIP message. RFC 3261
 §7.5 frames SIP over TCP by `Content-Length`, so a message may span segments and
 several may share one.
 
-On the production captures this matters more than it sounds. SIP there runs
-predominantly over TCP (4,304 of 4,852 messages in one hour), and **every
-emergency INVITE exceeded one MTU** — those are precisely the messages carrying
-SDP and `Geolocation`. Per-packet parsing loses or corrupts exactly the traffic
-the system exists to watch.
+SIP runs predominantly over TCP on these captures (4,304 of 4,852 messages in
+one hour). Measured on the same capture, both ways:
+
+| | Per-packet | Reassembled |
+|---|---|---|
+| Messages parsed | 4,850 | 4,852 |
+| Unparseable payloads | 7 | 0 |
+| Emergency INVITEs found | 8 | 8 |
+| ...with body correctly analysed | 6 | 8 |
+
+The message-count gain is small because this capture uses a 256 KB snaplen and
+the NIC performs segmentation offload, so most large messages appear as single
+captured segments. The body analysis is where it shows: two of eight emergency
+INVITEs are genuinely split, and per-packet parsing sees a truncated body whose
+`application/sdp` part header falls in the second segment.
+
+That margin depends entirely on the capture point. A smaller snaplen, a tap
+without offload, or a sender that segments would widen it considerably —
+reassembly is correct regardless, but on this data it is a modest gain rather
+than a rescue.
 
 Now: per-direction reassembly framed on `Content-Length`, pipelined messages
 split correctly, and streams joined mid-connection resynchronise to the next
 valid start line instead of being dropped.
+
+### SDP was missed inside multipart bodies
+
+NG911 i3 rarely sends bare SDP. It bundles SDP with PIDF-LO location and
+additional-data blocks in a `multipart/mixed` body, so testing the top-level
+`Content-Type` for `application/sdp` reported "no SDP" on **all eight** emergency
+INVITEs in the sample — precisely the calls that carry it. Multipart bodies are
+now inspected for their part headers, and `has_multipart_body` and
+`has_location_body` are exposed as features in their own right.
 
 ### `urn:service:sos` was not recognised
 

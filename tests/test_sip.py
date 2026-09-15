@@ -126,6 +126,40 @@ def test_emergency_service_urn_is_recognised(pseudonymiser):
     assert message.has_geolocation
 
 
+def test_sdp_inside_a_multipart_body_is_found(pseudonymiser):
+    """i3 bundles SDP with PIDF-LO rather than sending it bare.
+
+    Testing only the top-level Content-Type reports "no SDP" on exactly the
+    emergency calls that carry it, because theirs is multipart/mixed.
+    """
+    body = (
+        "--b1\r\nContent-Type: application/sdp\r\n\r\n"
+        "v=0\r\nm=audio 16400 RTP/AVP 0\r\n\r\n"
+        "--b1\r\nContent-Type: application/pidf+xml\r\n\r\n"
+        "<presence/>\r\n--b1--\r\n"
+    )
+    raw = sip_request(
+        "INVITE",
+        uri="urn:service:sos",
+        body=body,
+        extra="Content-Type: multipart/mixed; boundary=b1\r\n",
+    )
+    message = parse_message(raw, packet(b""), "c.pcap", pseudonymiser)
+
+    assert message is not None
+    assert message.has_multipart_body
+    assert message.has_sdp            # found inside the multipart, not the header
+    assert message.has_location_body  # PIDF-LO carried by value
+
+
+def test_bare_sdp_still_detected(pseudonymiser):
+    raw = sip_request("INVITE", body="v=0\r\n", extra="Content-Type: application/sdp\r\n")
+    message = parse_message(raw, packet(b""), "c.pcap", pseudonymiser)
+    assert message is not None
+    assert message.has_sdp
+    assert not message.has_multipart_body
+
+
 def test_non_sip_payload_is_rejected(pseudonymiser):
     assert parse_message(b"\x80\x00\x00\x01rtp", packet(b""), "c.pcap", pseudonymiser) is None
     assert parse_message(b"GET / HTTP/1.1\r\n\r\n", packet(b""), "c.pcap", pseudonymiser) is None
