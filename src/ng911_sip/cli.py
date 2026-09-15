@@ -58,6 +58,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         ports=_ports(args.ports),
         pseudonymiser=Pseudonymiser(enabled=not args.no_pseudonymise),
         progress=(lambda line: print(f"  {line}")) if args.verbose else None,
+        jobs=args.jobs,
     )
     if not result.messages:
         print("No SIP messages found.", file=sys.stderr)
@@ -96,6 +97,7 @@ def cmd_features(args: argparse.Namespace) -> int:
         ports=_ports(args.ports),
         pseudonymiser=Pseudonymiser(enabled=not args.no_pseudonymise),
         progress=(lambda line: print(f"  {line}")) if args.verbose else None,
+        jobs=args.jobs,
     )
     if not result.messages:
         print("No SIP messages found; nothing written.", file=sys.stderr)
@@ -332,6 +334,11 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--no-pseudonymise", action="store_true",
             help="keep caller identifiers in the clear (not for real 911 traffic)",
+        )
+        p.add_argument(
+            "-j", "--jobs", type=int, default=None,
+            help="parse this many captures at once (default: one per CPU core, "
+                 "capped at the number of files)",
         )
         p.add_argument("-v", "--verbose", action="store_true", help="per-file progress")
 

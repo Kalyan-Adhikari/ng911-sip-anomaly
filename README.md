@@ -236,10 +236,31 @@ Most runs need no options. These are the ones that matter.
 | `--target-fpr` | `0.01` | You are getting too many or too few alerts |
 | `--per-source` | off | You want results broken down by machine |
 | `--models` | `iforest ecod` | You want to compare different detection methods |
+| `--jobs` | one per CPU core | You want to limit how much of the machine it uses |
 
 The port setting deserves attention. The tool ignores traffic on other ports as
 its main speed trick, so if your SIP runs somewhere unusual and you do not set
 this, it will find nothing and report no problems.
+
+## Speed
+
+Captures are read in parallel, one process per file, using every CPU core by
+default. On twelve captures this cut a full pass from 58 seconds to 17.
+
+The important limit: **one file is read by one core.** Twelve captures means at
+most twelve cores get used, however many the machine has. If you have far more
+cores than capture files and want to use them, split the captures into smaller
+pieces when you record them. Hourly files are a reasonable default; fifteen
+minute files give four times the parallelism.
+
+To limit how much of a shared machine it takes:
+
+```bash
+ng911-sip features $PCAPS -o features/baseline.parquet --jobs 8
+```
+
+Results do not depend on this setting. Running with one core and with twenty
+produces identical output.
 
 ## Troubleshooting
 

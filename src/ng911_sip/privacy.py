@@ -81,6 +81,15 @@ class Pseudonymiser:
         self._cache: dict[str, str] = {}
         self.enabled = enabled
 
+    @property
+    def key(self) -> bytes:
+        """The raw key, so parallel workers can build an identical instance.
+
+        Every worker must hash with the same key or the same caller would get
+        different tokens in different files, inflating distinct-caller counts.
+        """
+        return self._key
+
     def token(self, value: str | None) -> str | None:
         """Hash one identity value, caching because callers repeat constantly."""
         if value is None:
